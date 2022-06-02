@@ -11,19 +11,32 @@ import random
 import time
 import torch
 from torch.utils.data import DataLoader
+from pathlib import Path
+import numpy as np
 
 from hparam import hparam as hp
 from data_load import SpeakerDatasetTIMIT, SpeakerDatasetTIMITPreprocessed
 from speech_embedder_net import SpeechEmbedder, GE2ELoss, get_centroids, get_cossim
+import torch_dataset as TD
 
 def train(model_path):
     device = torch.device(hp.device)
     
     if hp.data.data_preprocessed:
-        train_dataset = SpeakerDatasetTIMITPreprocessed()
+        train_dataset = TD.torch_dataset(torch_dirpath = Path('C:\\Users\\prana\\Desktop\\GE2E\\PyTorch_Speaker_Verification\\train_tisv_NoiseSplit'), 
+				ext = 'npy',
+				mini_batch_size = 5,
+				to_shuffle = True)
+        #train_dataset = SpeakerDatasetTIMITPreprocessed()
     else:
         train_dataset = SpeakerDatasetTIMIT()
-    train_loader = DataLoader(train_dataset, batch_size=hp.train.N, shuffle=True, num_workers=hp.train.num_workers, drop_last=True) 
+    
+    custom_collate = TD.collate_fn(device = 'cpu', from_numpy = True)
+
+    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, collate_fn= custom_collate)
+
+	#train_loader = DataLoader(train_dataset,batch_size = 4, shuffle = True, collate_fn = custom_collate, num_workers=hp.train.num_workers)
+    #train_loader = DataLoader(train_dataset, batch_size=hp.train.N, shuffle=True, num_workers=hp.train.num_workers, drop_last=True) 
     
     embedder_net = SpeechEmbedder().to(device)
     if hp.train.restore:
@@ -43,8 +56,8 @@ def train(model_path):
         total_loss = 0
         for batch_id, mel_db_batch in enumerate(train_loader): 
             mel_db_batch = mel_db_batch.to(device)
-            
-            mel_db_batch = torch.reshape(mel_db_batch, (hp.train.N*hp.train.M, mel_db_batch.size(2), mel_db_batch.size(3)))
+            mel_db_batch = mel_db_batch.permute(0, 2, 1)
+            #mel_db_batch = torch.reshape(mel_db_batch, (hp.train.N*hp.train.M, mel_db_batch.size(2), mel_db_batch.size(3)))
             perm = random.sample(range(0, hp.train.N*hp.train.M), hp.train.N*hp.train.M)
             unperm = list(perm)
             for i,j in enumerate(perm):
@@ -95,7 +108,10 @@ def test(model_path):
         test_dataset = SpeakerDatasetTIMITPreprocessed()
     else:
         test_dataset = SpeakerDatasetTIMIT()
+    
     test_loader = DataLoader(test_dataset, batch_size=hp.test.N, shuffle=True, num_workers=hp.test.num_workers, drop_last=True)
+    #custom_collate = TD.collate_fn(device = 'cpu', from_numpy = True)
+    #test_loader = DataLoader(test_dataset, batch_size=4, shuffle=True, collate_fn= custom_collate)
     
     embedder_net = SpeechEmbedder()
     embedder_net.load_state_dict(torch.load(model_path))
@@ -104,7 +120,9 @@ def test(model_path):
     avg_EER = 0
     for e in range(hp.test.epochs):
         batch_avg_EER = 0
+        #print(len(test_loader))
         for batch_id, mel_db_batch in enumerate(test_loader):
+            print(mel_db_batch.shape)
             assert hp.test.M % 2 == 0
             enrollment_batch, verification_batch = torch.split(mel_db_batch, int(mel_db_batch.size(1)/2), dim=1)
             
@@ -149,6 +167,7 @@ def test(model_path):
                     EER_FRR = FRR
             batch_avg_EER += EER
             print("\nEER : %0.2f (thres:%0.2f, FAR:%0.2f, FRR:%0.2f)"%(EER,EER_thresh,EER_FAR,EER_FRR))
+    
         avg_EER += batch_avg_EER/(batch_id+1)
     avg_EER = avg_EER / hp.test.epochs
     print("\n EER across {0} epochs: {1:.4f}".format(hp.test.epochs, avg_EER))
